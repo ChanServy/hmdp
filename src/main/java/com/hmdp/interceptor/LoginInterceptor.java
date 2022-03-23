@@ -21,10 +21,11 @@ public class LoginInterceptor implements HandlerInterceptor {
         UserDTO user = (UserDTO) session.getAttribute("user");
         //判断用户是否存在
         if (user == null) {
+            //用户不存在，没登录或者登录状态过期
             response.setStatus(401);
             return false;
         }
-        //存在，保存用户到ThreadLocal
+        //存在，保存用户到ThreadLocal，在拦截器中将user放入ThreadLocal，方便后续业务中获取用户信息
         UserHolder.saveUser(user);
         //放行
         return true;

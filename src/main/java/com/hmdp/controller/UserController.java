@@ -67,7 +67,7 @@ public class UserController {
      */
     @GetMapping("/me")
     public Result me(){
-        // 从ThreadLocal中获取当前登录的用户并返回（在拦截器中将user放入了ThreadLocal，方便后续业务中获取用户信息）
+        // 从ThreadLocal中获取当前登录的用户并返回
         UserDTO user = UserHolder.getUser();
         /*
           使用session获取用户也能实现
