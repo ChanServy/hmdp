@@ -67,8 +67,13 @@ public class UserController {
      */
     @GetMapping("/me")
     public Result me(){
-        // 获取当前登录的用户并返回
+        // 从ThreadLocal中获取当前登录的用户并返回
         UserDTO user = UserHolder.getUser();
+        /*
+          使用session获取用户也能实现
+          HttpSession session = request.getSession();
+          UserDTO user = (UserDTO) session.getAttribute("user");
+         */
         return Result.ok(user);
     }
 
