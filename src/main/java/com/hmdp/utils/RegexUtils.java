@@ -7,7 +7,7 @@ import cn.hutool.core.util.StrUtil;
  */
 public class RegexUtils {
     /**
-     * 是否是无效手机格式
+     * 是否是无效手机格式 Invalid无效的
      * @param phone 要校验的手机号
      * @return true:符合，false：不符合
      */

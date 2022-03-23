@@ -34,7 +34,6 @@
             <groupId>mysql</groupId>
             <artifactId>mysql-connector-java</artifactId>
             <scope>runtime</scope>
-<!--            <version>5.1.47</version>-->
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
@@ -51,7 +50,7 @@
             <artifactId>mybatis-plus-boot-starter</artifactId>
             <version>3.4.3</version>
         </dependency>
-        <!--hutool-->
+        <!--hutool，很实用的工具包-->
         <dependency>
             <groupId>cn.hutool</groupId>
             <artifactId>hutool-all</artifactId>
