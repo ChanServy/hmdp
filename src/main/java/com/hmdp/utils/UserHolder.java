@@ -16,6 +16,7 @@ import com.hmdp.dto.UserDTO;
  * public T get()：获取当前线程绑定的局部变量
  * public void remove()：移除当前线程绑定的局部变量
  *
+ * 理解：
  * 底层是一个ThreadLocalMap。键默认是当前线程，值就是当前线程域中存入的东西。
  */
 public class UserHolder {
