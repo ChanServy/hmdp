@@ -1,7 +1,8 @@
 package com.hmdp.mapper;
 
-import com.hmdp.entity.Shop;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.hmdp.entity.Shop;
+import org.springframework.stereotype.Repository;
 
 /**
  * <p>
@@ -11,6 +12,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
  * @author 虎哥
  * @since 2021-12-22
  */
+@Repository
 public interface ShopMapper extends BaseMapper<Shop> {
 
 }
