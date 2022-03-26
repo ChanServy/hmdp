@@ -50,15 +50,16 @@ public class ShopController {
     }
 
     /**
-     * 更新商铺信息
+     * 更新商铺信息，商铺信息要尽量保证数据库缓存双写一致性
      * @param shop 商铺数据
      * @return 无
      */
     @PutMapping
     public Result updateShop(@RequestBody Shop shop) {
         // 写入数据库
-        shopService.updateById(shop);
-        return Result.ok();
+        // shopService.updateById(shop);
+        // return Result.ok();
+        return shopService.updateShopById(shop);
     }
 
     /**

@@ -10,8 +10,11 @@ import com.hmdp.service.IShopService;
 import com.hmdp.utils.RedisConstants;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
@@ -40,15 +43,43 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
             Shop shop = JSONUtil.toBean(shopJson, Shop.class);
             return Result.ok(shop);
         }
-        //不存在，根据id查询数据库
-        Shop shop = shopMapper.selectById(id);
-        //不存在，返回错误
-        if (shop == null) {
+        //有效解决缓存穿透
+        if (Objects.equals(shopJson, "")) {
             return Result.fail("店铺不存在");
         }
-        //存在，先将数据写入redis
-        stringRedisTemplate.opsForValue().set(RedisConstants.CACHE_SHOP_KEY + id, JSONUtil.toJsonStr(shop));
+        //缓存中不存在，根据id查询数据库
+        Shop shop = shopMapper.selectById(id);
+        //数据库中不存在，在redis中给这个键设置一个空值，防止缓存穿透，并返回错误
+        if (shop == null) {
+            stringRedisTemplate.opsForValue().set(RedisConstants.CACHE_SHOP_KEY + id, "", RedisConstants.CACHE_NULL_TTL, TimeUnit.MINUTES);
+            return Result.fail("店铺不存在");
+        }
+        //数据库中存在，将数据写入redis，这里设置一个超时时间，是为双写一致性方案可能会出现的纰漏兜底
+        //即使极端情况发生导致数据库和缓存的数据不一致，那么到达超时时间之后缓存会清空，数据再被访问时会同步新数据
+        stringRedisTemplate.opsForValue().set(RedisConstants.CACHE_SHOP_KEY + id, JSONUtil.toJsonStr(shop), RedisConstants.CACHE_SHOP_TTL, TimeUnit.MINUTES);
         //返回
         return Result.ok(shop);
+    }
+
+    /**
+     * 更新操作的时候尽量保证数据库和缓存的数据双写一致性
+     * 1.选择删除缓存而不是更新缓存
+     * 2.要先更新数据库，后删除缓存
+     * 3.保证更新数据库和删除缓存这一系列操作的原子性（事务）
+     *  3.1单体项目直接加@Transaction
+     *  3.2分布式项目使用TCC等分布式事务方案
+     */
+    @Override
+    @Transactional
+    public Result updateShopById(Shop shop) {
+        Long id = shop.getId();
+        if (id == null){
+            return Result.fail("商铺id不能为空");
+        }
+        //更新数据库
+        shopMapper.updateById(shop);
+        //删除缓存
+        stringRedisTemplate.delete(RedisConstants.CACHE_SHOP_KEY + id);
+        return Result.ok();
     }
 }
