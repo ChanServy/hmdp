@@ -79,7 +79,7 @@ public class ShopTypeServiceImpl extends ServiceImpl<ShopTypeMapper, ShopType> i
             shopTypeJsons.add(shopTypeJson);
         }
         //将查询到的数据放入缓存
-        stringRedisTemplate.opsForList().leftPushAll(CACHE_SHOP_TYPE_KEY, shopTypeJsons);
+        stringRedisTemplate.opsForList().rightPushAll(CACHE_SHOP_TYPE_KEY, shopTypeJsons);
         return Result.ok(result);
     }
 }
