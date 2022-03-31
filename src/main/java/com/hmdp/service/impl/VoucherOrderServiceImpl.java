@@ -76,7 +76,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     }
 
     /**
-     * 单体项目下，一人一单业务可以使用synchronized锁
+     * 单服务或者单体项目，一人一单业务可以使用synchronized锁
+     * 如果是将服务集群部署，synchronized锁就失效了
+     * 微服务项目中，不同的服务之间可能会用到分布式事务，相同的服务部署成集群时可能会用到分布式锁
      *
      * @param voucherId 优惠券id
      * @return 订单对象VoucherOrder
