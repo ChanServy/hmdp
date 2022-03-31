@@ -34,7 +34,7 @@ public class RedisIdWorker {
         //2.生成序列号
         String date = now.format(DateTimeFormatter.ofPattern("yyyy:MM:dd"));
         //将redis中"increment:" + keyPrefix + ":" + date键对应的值自增并返回自增之后的值，起初没有这个键的话，incr后会新建并返回1
-        Long count = stringRedisTemplate.opsForValue().increment("incr:" + keyPrefix + ":" + date);
+        Long count = stringRedisTemplate.opsForValue().increment("incr:" + keyPrefix + ":" + date);//redis的incr为原子操作
         //3.拼接并返回
         return timestamp << COUNT_BITS | count;
     }

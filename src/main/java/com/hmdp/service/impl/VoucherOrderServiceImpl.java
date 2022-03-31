@@ -11,7 +11,9 @@ import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.utils.RedisIdWorker;
+import com.hmdp.utils.SimpleLock;
 import com.hmdp.utils.UserHolder;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -41,6 +43,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private RedisIdWorker idWorker;
 
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
     /**
      * 秒杀优惠券
      *
@@ -68,7 +73,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("库存不足！");
         }
 
-        VoucherOrder voucherOrder = updateStockAndSaveOrder(voucherId);
+        VoucherOrder voucherOrder = updateStockAndSaveOrder2(voucherId);
         if (voucherOrder == null) {
             return Result.fail("下单失败！");
         }
@@ -77,8 +82,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     /**
      * 单服务或者单体项目，一人一单业务可以使用synchronized锁
-     * 如果是将服务集群部署，synchronized锁就失效了
-     * 微服务项目中，不同的服务之间可能会用到分布式事务，相同的服务部署成集群时可能会用到分布式锁
+     * 如果是将服务集群部署，synchronized锁就失效了，synchronized只能保证单个JVM内部的多个线程之间互斥
      *
      * @param voucherId 优惠券id
      * @return 订单对象VoucherOrder
@@ -143,5 +147,48 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             //返回订单
             return voucherOrder;
         }
+    }
+
+    @Transactional
+    public VoucherOrder updateStockAndSaveOrder2(Long voucherId) {
+        Long userId = UserHolder.getUser().getId();
+        //以userId为键，锁user，降低锁粒度，提升效率
+        SimpleLock simpleLock = new SimpleLock("order:" + userId, stringRedisTemplate);
+        boolean lock = simpleLock.getLock(10);
+        if (!lock) {
+            return null;
+        } else {
+            try {
+                //这里加锁的意义在于只能有一个线程去查询数据库中的订单，确保一人一单
+                QueryWrapper<VoucherOrder> queryWrapper = new QueryWrapper<>();
+                queryWrapper.eq("user_id", userId);
+                queryWrapper.eq("voucher_id", voucherId);
+                Integer count = voucherOrderMapper.selectCount(queryWrapper);
+                if (count != 0) {
+                    //证明之前购买过
+                    return null;
+                }
+                //扣减库存
+                UpdateWrapper<SeckillVoucher> updateWrapper = new UpdateWrapper<>();
+                updateWrapper.setSql("stock = stock - 1");
+                updateWrapper.eq("voucher_id", voucherId);
+                updateWrapper.gt("stock", 0);
+                int modified = seckillVoucherMapper.update(null, updateWrapper);
+                if (modified != 1) {
+                    return null;
+                }
+                VoucherOrder voucherOrder = new VoucherOrder();
+                voucherOrder.setVoucherId(voucherId);
+                voucherOrder.setUserId(userId);
+                voucherOrder.setId(idWorker.nextId("order"));
+                voucherOrderMapper.insert(voucherOrder);
+                return voucherOrder;
+            } catch (Exception e) {
+                e.printStackTrace();
+            } finally {
+                simpleLock.releaseLock();
+            }
+        }
+        return null;
     }
 }
