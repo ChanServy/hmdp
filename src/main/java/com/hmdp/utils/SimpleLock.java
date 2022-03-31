@@ -1,9 +1,9 @@
 package com.hmdp.utils;
 
+import cn.hutool.core.lang.UUID;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.util.Objects;
-import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -17,13 +17,12 @@ public class SimpleLock implements ILock{
     private final String businessName;
     private final StringRedisTemplate redisTemplate;
     private static final String KEY_PREFIX = "lock:";
+    private static final String ID_PREFIX = UUID.randomUUID().toString(true) + "-";
     public SimpleLock(String businessName, StringRedisTemplate redisTemplate) {
         this.businessName = businessName;
         this.redisTemplate = redisTemplate;
     }
 
-    static long id = Thread.currentThread().getId();
-    static String uuid = UUID.randomUUID().toString().replaceAll("-", "") + "-";
 
     /**
      * 添加分布式锁
@@ -32,7 +31,10 @@ public class SimpleLock implements ILock{
      */
     @Override
     public boolean getLock(long timeoutSec) {
-        Boolean success = redisTemplate.opsForValue().setIfAbsent(KEY_PREFIX + businessName, uuid + id, timeoutSec, TimeUnit.SECONDS);
+        //获取当前线程标识
+        String threadId = ID_PREFIX + Thread.currentThread().getId();
+        //获取锁
+        Boolean success = redisTemplate.opsForValue().setIfAbsent(KEY_PREFIX + businessName, threadId, timeoutSec, TimeUnit.SECONDS);
         return Boolean.TRUE.equals(success);
     }
 
@@ -41,8 +43,13 @@ public class SimpleLock implements ILock{
      */
     @Override
     public void releaseLock() {
-        String value = redisTemplate.opsForValue().get(KEY_PREFIX + businessName);
-        if (Objects.equals(value, uuid + id)){
+        //获取当前线程标识
+        String threadId = ID_PREFIX + Thread.currentThread().getId();
+        //获取redis锁中的标识
+        String id = redisTemplate.opsForValue().get(KEY_PREFIX + businessName);
+        //判断标识是否一致
+        if (Objects.equals(threadId, id)){
+            //一致则释放锁
             redisTemplate.delete(KEY_PREFIX + businessName);
         }
     }
