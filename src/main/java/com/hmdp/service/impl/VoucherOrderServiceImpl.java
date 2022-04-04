@@ -13,6 +13,8 @@ import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.SimpleLock;
 import com.hmdp.utils.UserHolder;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -46,6 +48,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private StringRedisTemplate stringRedisTemplate;
 
+    @Resource
+    private RedissonClient redissonClient;
+
     /**
      * 秒杀优惠券
      *
@@ -73,7 +78,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("库存不足！");
         }
 
-        VoucherOrder voucherOrder = updateStockAndSaveOrder2(voucherId);
+        VoucherOrder voucherOrder = updateStockAndSaveOrder3(voucherId);
         if (voucherOrder == null) {
             return Result.fail("下单失败！");
         }
@@ -149,6 +154,13 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
     }
 
+    /**
+     * 使用Redis实现分布式锁来解决高并发场景下一人一单的线程安全问题
+     * 通过redis调用lua脚本来保证 比较线程标识 和 释放锁 两个动作的原子性，防误删
+     *
+     * @param voucherId 优惠券id
+     * @return 优惠券订单
+     */
     @Transactional
     public VoucherOrder updateStockAndSaveOrder2(Long voucherId) {
         Long userId = UserHolder.getUser().getId();
@@ -187,6 +199,58 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 e.printStackTrace();
             } finally {
                 simpleLock.releaseLock();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 使用Redisson的分布式锁解决高并发场景下一人一单的线程安全问题
+     *
+     * @param voucherId 优惠券id
+     * @return 优惠券订单
+     */
+    // @SneakyThrows
+    @Transactional
+    public VoucherOrder updateStockAndSaveOrder3(Long voucherId) {
+        Long userId = UserHolder.getUser().getId();
+        // 获取锁（可重入），指定锁的名称就是key，这里以userId为键，锁user，降低锁粒度，提升效率
+        RLock lock = redissonClient.getLock("order:" + userId);
+        // 尝试获取锁，参数分别是：获取锁的最大等待时间（期间会重试），锁自动释放时间，时间单位。
+        // 不传参数就是默认-1，不会等待，获取失败立即结束；默认超时时间为30s
+        boolean isLock = lock.tryLock();
+        if (!isLock) {
+            return null;
+        } else {
+            try {
+                //这里加锁的意义在于只能有一个线程去查询数据库中的订单，确保一人一单
+                QueryWrapper<VoucherOrder> queryWrapper = new QueryWrapper<>();
+                queryWrapper.eq("user_id", userId);
+                queryWrapper.eq("voucher_id", voucherId);
+                Integer count = voucherOrderMapper.selectCount(queryWrapper);
+                if (count != 0) {
+                    //证明之前购买过
+                    return null;
+                }
+                //扣减库存
+                UpdateWrapper<SeckillVoucher> updateWrapper = new UpdateWrapper<>();
+                updateWrapper.setSql("stock = stock - 1");
+                updateWrapper.eq("voucher_id", voucherId);
+                updateWrapper.gt("stock", 0);
+                int modified = seckillVoucherMapper.update(null, updateWrapper);
+                if (modified != 1) {
+                    return null;
+                }
+                VoucherOrder voucherOrder = new VoucherOrder();
+                voucherOrder.setVoucherId(voucherId);
+                voucherOrder.setUserId(userId);
+                voucherOrder.setId(idWorker.nextId("order"));
+                voucherOrderMapper.insert(voucherOrder);
+                return voucherOrder;
+            } catch (Exception e) {
+                e.printStackTrace();
+            } finally {
+                lock.unlock();
             }
         }
         return null;
