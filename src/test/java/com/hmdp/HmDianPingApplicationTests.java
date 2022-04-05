@@ -2,6 +2,7 @@ package com.hmdp;
 
 import com.hmdp.service.impl.ShopServiceImpl;
 import com.hmdp.utils.RedisIdWorker;
+import lombok.extern.slf4j.Slf4j;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.redisson.api.RLock;
@@ -17,6 +18,7 @@ import java.util.concurrent.TimeUnit;
 
 @SpringBootTest
 @RunWith(SpringRunner.class)
+@Slf4j
 public class HmDianPingApplicationTests {
 
     @Resource
@@ -31,7 +33,7 @@ public class HmDianPingApplicationTests {
     private final ExecutorService POOL = Executors.newFixedThreadPool(500);
 
     /**
-     * 测试IdWorker
+     * 测试IdWorker，生成30000个ID计时
      */
     @Test
     public void testIdWorker() throws InterruptedException {
