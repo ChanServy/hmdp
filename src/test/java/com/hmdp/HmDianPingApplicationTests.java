@@ -68,7 +68,8 @@ public class HmDianPingApplicationTests {
     public void testRedisson() throws InterruptedException {
         // 获取锁（可重入），指定锁的名称
         RLock lock = redissonClient.getLock("testLock");
-        // 尝试获取锁，参数分别是：获取锁的最大等待时间（期间会重试），锁自动释放时间，时间单位
+        // 尝试获取锁，参数分别是：获取锁的最大等待时间（期间会重试，不写会默认-1，不等待），锁自动释放时间（不写默认30s），时间单位
+        // true代表获取到分布式锁，存在redis中的格式 key:testLock  field:bd32e60a-8e52-455f-a4a9-6262d39c976f:1  value:1
         boolean isLock = lock.tryLock(1, 10, TimeUnit.SECONDS);
         // 判断释放获取成功
         if (isLock) {
@@ -80,5 +81,4 @@ public class HmDianPingApplicationTests {
             }
         }
     }
-
 }
