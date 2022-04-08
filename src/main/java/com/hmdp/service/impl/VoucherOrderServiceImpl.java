@@ -8,19 +8,27 @@ import com.hmdp.entity.SeckillVoucher;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.SeckillVoucherMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
-import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.SimpleLock;
 import com.hmdp.utils.UserHolder;
+import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.annotation.PostConstruct;
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * <p>
@@ -31,13 +39,11 @@ import java.time.LocalDateTime;
  * @since 2021-12-22
  */
 @Service
+@Slf4j
 public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, VoucherOrder> implements IVoucherOrderService {
 
     @Resource
     private SeckillVoucherMapper seckillVoucherMapper;
-
-    @Resource
-    private ISeckillVoucherService seckillVoucherService;
 
     @Resource
     private VoucherOrderMapper voucherOrderMapper;
@@ -50,6 +56,45 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @Resource
     private RedissonClient redissonClient;
+
+    // 加载lua脚本
+    private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
+
+    static {
+        SECKILL_SCRIPT = new DefaultRedisScript<>();
+        SECKILL_SCRIPT.setLocation(new ClassPathResource("secondKill.lua"));
+        SECKILL_SCRIPT.setResultType(Long.class);
+    }
+
+    private final BlockingQueue<VoucherOrder> orderTasksQueue = new ArrayBlockingQueue<>(1024 * 1024);
+    // 单线程线程池
+    private static final ExecutorService SECKILL_ORDER_POOL = Executors.newSingleThreadExecutor();
+
+    // 项目一启动，用户随时都可能会来秒杀，因此我们这个任务应该在类初始化之后就赶紧执行
+    // 让类一初始化就来执行这个任务
+    @PostConstruct//在当前类初始化完毕以后就来执行
+    private void init() {
+        SECKILL_ORDER_POOL.submit(new VoucherOrderHandler());
+    }
+
+    private class VoucherOrderHandler implements Runnable {
+        @Override
+        public void run() {
+            for (;;){
+                try {
+                    // 获取队列中的订单信息
+                    // take方法，获取和删除该队列的头部，如果队列中为空，则阻塞等待；也就是说队列中没有元素会卡在这里，有元素才会继续，不用担心死循环浪费CPU
+                    VoucherOrder voucherOrder = orderTasksQueue.take();
+                    // 创建订单
+                    createVoucherOrder(voucherOrder);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                    log.error("处理订单异常", e);
+                    return;
+                }
+            }
+        }
+    }
 
     /**
      * 秒杀优惠券
@@ -78,11 +123,39 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("库存不足！");
         }
 
-        VoucherOrder voucherOrder = updateStockAndSaveOrder3(voucherId);
-        if (voucherOrder == null) {
-            return Result.fail("下单失败！");
+        // 锁实现下单业务，下面三个方法，第一个是synchronized锁，第二个是基于redis自己实现的分布式锁，第三个是redisson实现分布式锁
+        // VoucherOrder voucherOrder = updateStockAndSaveOrder3(voucherId);
+        // if (voucherOrder == null) {
+        //     return Result.fail("下单失败！");
+        // }
+        // 返回订单号
+        // return Result.ok(voucherOrder.getId());
+
+        // 使用redis调用lua脚本的方式实现下单业务
+        Long userId = UserHolder.getUser().getId();
+        // 执行lua脚本
+        Long result = stringRedisTemplate.execute(
+                SECKILL_SCRIPT,
+                Collections.emptyList(),
+                voucherId.toString(),
+                userId.toString()
+        );
+        // 判断结果是否为0
+        assert result != null;
+        if (result.intValue() != 0) {
+            // 不为0，根据lua脚本中我们自己写的逻辑，代表没有购买资格
+            return Result.fail(result.intValue() == 1 ? "库存不足！" : "不能重复下单！");
         }
-        return Result.ok(voucherOrder);
+        // 为0了，有购买资格，把下订单信息保存到阻塞队列中
+        VoucherOrder voucherOrder = new VoucherOrder();
+        long orderId = idWorker.nextId("order");
+        voucherOrder.setId(orderId);
+        voucherOrder.setVoucherId(voucherId);
+        voucherOrder.setUserId(userId);
+        // 放入阻塞队列，由线程池异步处理减库存和入库动作
+        orderTasksQueue.add(voucherOrder);
+        // 返回
+        return Result.ok(orderId);
     }
 
     /**
@@ -254,5 +327,42 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             }
         }
         return null;
+    }
+
+    @Transactional
+    public void createVoucherOrder(VoucherOrder voucherOrder) {
+        Long userId = voucherOrder.getUserId();
+        Long voucherId = voucherOrder.getVoucherId();
+        // 其实这块不加锁也可以，因为在lua脚本判断过“一人一单”
+        RLock lock = redissonClient.getLock("order:" + userId);
+        boolean isLock = lock.tryLock();
+        if (!isLock) {
+            log.error("不允许重复下单！");
+        } else {
+            try {
+                QueryWrapper<VoucherOrder> queryWrapper = new QueryWrapper<>();
+                queryWrapper.eq("user_id", userId);
+                queryWrapper.eq("voucher_id", voucherId);
+                Integer count = voucherOrderMapper.selectCount(queryWrapper);
+                if (count != 0) {
+                    log.error("不允许重复下单！");
+                }
+                // 扣减库存
+                UpdateWrapper<SeckillVoucher> updateWrapper = new UpdateWrapper<>();
+                updateWrapper.setSql("stock = stock - 1");
+                updateWrapper.eq("voucher_id", voucherId);
+                updateWrapper.gt("stock", 0);
+                int modified = seckillVoucherMapper.update(null, updateWrapper);
+                if (modified != 1) {
+                    log.error("库存不足！");
+                }
+                // 订单入数据库
+                voucherOrderMapper.insert(voucherOrder);
+            } catch (Exception e) {
+                e.printStackTrace();
+            } finally {
+                lock.unlock();
+            }
+        }
     }
 }
