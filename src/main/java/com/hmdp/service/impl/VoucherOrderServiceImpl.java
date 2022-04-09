@@ -15,20 +15,19 @@ import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import javax.annotation.PostConstruct;
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.Collections;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+
+import static com.hmdp.utils.RabbitMQConstants.ASYNC_CREATE_ORDER_KEY;
+import static com.hmdp.utils.RabbitMQConstants.ASYNC_ORDER_EXCHANGE;
 
 /**
  * <p>
@@ -57,6 +56,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private RedissonClient redissonClient;
 
+    @Resource
+    private RabbitTemplate rabbitTemplate;
+
+
     // 加载lua脚本
     private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
 
@@ -66,21 +69,17 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         SECKILL_SCRIPT.setResultType(Long.class);
     }
 
-    private final BlockingQueue<VoucherOrder> orderTasksQueue = new ArrayBlockingQueue<>(1024 * 1024);
+    // 创建阻塞队列
+    // private final BlockingQueue<VoucherOrder> orderTasksQueue = new ArrayBlockingQueue<>(1024 * 1024);
     // 单线程线程池
-    private static final ExecutorService SECKILL_ORDER_POOL = Executors.newSingleThreadExecutor();
+    // private static final ExecutorService SECKILL_ORDER_POOL = Executors.newSingleThreadExecutor();
 
-    // 项目一启动，用户随时都可能会来秒杀，因此我们这个任务应该在类初始化之后就赶紧执行
-    // 让类一初始化就来执行这个任务
-    @PostConstruct//在当前类初始化完毕以后就来执行
-    private void init() {
-        SECKILL_ORDER_POOL.submit(new VoucherOrderHandler());
-    }
-
+    /*
+    创建任务
     private class VoucherOrderHandler implements Runnable {
         @Override
         public void run() {
-            for (;;){
+            for (; ; ) {
                 try {
                     // 获取队列中的订单信息
                     // take方法，获取和删除该队列的头部，如果队列中为空，则阻塞等待；也就是说队列中没有元素会卡在这里，有元素才会继续，不用担心死循环浪费CPU
@@ -95,6 +94,15 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             }
         }
     }
+    */
+
+    /*
+    项目一启动，用户随时都可能会来秒杀，因此我们要让类一初始化完就来执行这个任务
+    @PostConstruct//在当前类初始化完毕以后就来执行
+    private void init() {
+        SECKILL_ORDER_POOL.submit(new VoucherOrderHandler());
+    }
+    */
 
     /**
      * 秒杀优惠券
@@ -131,6 +139,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         // 返回订单号
         // return Result.ok(voucherOrder.getId());
 
+
         // 使用redis调用lua脚本的方式实现下单业务
         Long userId = UserHolder.getUser().getId();
         // 执行lua脚本
@@ -152,8 +161,26 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         voucherOrder.setId(orderId);
         voucherOrder.setVoucherId(voucherId);
         voucherOrder.setUserId(userId);
-        // 放入阻塞队列，由线程池异步处理减库存和入库动作
-        orderTasksQueue.add(voucherOrder);
+
+        // 放入阻塞队列，由线程池异步处理减库存和入库任务
+        // orderTasksQueue.add(voucherOrder);
+
+        // 放入阻塞队列中，如果数据量过大，那么会对JVM的内存造成很大的压力；另外如果这个服务宕机重启，那么阻塞队列中的数据就丢失了
+        // 因此基于阻塞队列这种异步处理的思想，我们引入RabbitMQ消息队列
+        log.info("send voucherOrder message: {}", voucherOrder);
+        // 生产者发送消息到exchange后没有绑定的queue时将消息退回
+        rabbitTemplate.setReturnCallback((message, replyCode, replyText, exchange, routingKey) ->
+                log.info("发送优惠券订单消息被退回！exchange: {}, routingKey: {}", exchange, routingKey));
+        // 生产者发送消息confirm检测
+        this.rabbitTemplate.setConfirmCallback((correlationData, ack, cause) -> {
+            if (!ack) {
+                log.info("消息发送失败！cause：{}，correlationData：{}", cause, correlationData);
+            } else {
+                log.info("消息发送成功！");
+            }
+        });
+        rabbitTemplate.convertAndSend(ASYNC_ORDER_EXCHANGE, ASYNC_CREATE_ORDER_KEY, voucherOrder);
+
         // 返回
         return Result.ok(orderId);
     }
@@ -329,40 +356,22 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         return null;
     }
 
+    /**
+     * 使用阻塞队列异步创建订单时使用的方法
+     *
+     * @param voucherOrder voucherOrder
+     */
     @Transactional
     public void createVoucherOrder(VoucherOrder voucherOrder) {
-        Long userId = voucherOrder.getUserId();
         Long voucherId = voucherOrder.getVoucherId();
-        // 其实这块不加锁也可以，因为在lua脚本判断过“一人一单”
-        RLock lock = redissonClient.getLock("order:" + userId);
-        boolean isLock = lock.tryLock();
-        if (!isLock) {
-            log.error("不允许重复下单！");
-        } else {
-            try {
-                QueryWrapper<VoucherOrder> queryWrapper = new QueryWrapper<>();
-                queryWrapper.eq("user_id", userId);
-                queryWrapper.eq("voucher_id", voucherId);
-                Integer count = voucherOrderMapper.selectCount(queryWrapper);
-                if (count != 0) {
-                    log.error("不允许重复下单！");
-                }
-                // 扣减库存
-                UpdateWrapper<SeckillVoucher> updateWrapper = new UpdateWrapper<>();
-                updateWrapper.setSql("stock = stock - 1");
-                updateWrapper.eq("voucher_id", voucherId);
-                updateWrapper.gt("stock", 0);
-                int modified = seckillVoucherMapper.update(null, updateWrapper);
-                if (modified != 1) {
-                    log.error("库存不足！");
-                }
-                // 订单入数据库
-                voucherOrderMapper.insert(voucherOrder);
-            } catch (Exception e) {
-                e.printStackTrace();
-            } finally {
-                lock.unlock();
-            }
-        }
+        // 这块不用加锁，因为在lua脚本判断过“一人一单”，并且判断过“库存充足”，库存充足且符合一人一单，程序才会跑到这里
+        // 扣减库存
+        UpdateWrapper<SeckillVoucher> updateWrapper = new UpdateWrapper<>();
+        updateWrapper.setSql("stock = stock - 1");
+        updateWrapper.eq("voucher_id", voucherId);
+        updateWrapper.gt("stock", 0);
+        seckillVoucherMapper.update(null, updateWrapper);
+        // 订单入数据库
+        voucherOrderMapper.insert(voucherOrder);
     }
 }

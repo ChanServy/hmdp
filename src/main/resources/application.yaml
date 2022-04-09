@@ -3,14 +3,17 @@ server:
 spring:
   application:
     name: hmdp
+  # 数据库配置
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     # useAffectedRows=true 更新mysql时返回受影响的行数
     url: jdbc:mysql://127.0.0.1:3306/hmdp?useAffectedRows=true&useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=GMT%2B8
     username: root
     password: 123456
+  # redis配置
   redis:
-    host: 192.168.1.107
+    # host: 192.168.1.107
+    host: 127.0.0.1
     port: 6379
     password: 123456
     lettuce:
@@ -19,6 +22,17 @@ spring:
         max-idle: 10
         min-idle: 1
         time-between-eviction-runs: 10s
+  # rabbitmq配置
+  rabbitmq:
+    host: 127.0.0.1
+    username: root
+    password: 123456
+    virtual-host: hmdp
+    publisher-confirms: true # 开启发送确认
+    publisher-returns: true # 开启发送失败退回
+    listener:
+      simple:
+        acknowledge-mode: manual # 全局开启ACK
   jackson:
     default-property-inclusion: non_null # JSON处理时忽略非空字段
 mybatis-plus:
