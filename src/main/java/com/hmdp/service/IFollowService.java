@@ -28,4 +28,6 @@ public interface IFollowService extends IService<Follow> {
      * @return Result
      */
     Result isFollow(Long followUserId);
+
+    Result followCommons(Long id);
 }
